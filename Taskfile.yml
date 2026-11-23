@@ -1,0 +1,23 @@
+version: "3"
+
+tasks:
+  build:
+    desc: Build the shtick binary
+    cmds:
+      - go build -o dist/shtick .
+
+  test:
+    desc: Run all tests (the zsh test is skipped when zsh is missing)
+    cmds:
+      - go test ./...
+
+  lint:
+    desc: Vet and check formatting
+    cmds:
+      - go vet ./...
+      - test -z "$(gofmt -l .)"
+
+  install:
+    desc: Install shtick into GOBIN
+    cmds:
+      - go install .
