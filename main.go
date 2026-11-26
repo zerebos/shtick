@@ -1,5 +1,5 @@
-// Command shtick tracks which zsh aliases and functions you use, nudges you
-// when you type the long form, and reports what you never touch.
+// Command shtick tracks which zsh and bash aliases and functions you use,
+// nudges you when you type the long form, and reports what you never touch.
 package main
 
 import (
@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -25,9 +26,12 @@ import (
 //go:embed shell/shtick.plugin.zsh
 var zshPlugin string
 
+//go:embed shell/shtick.bash
+var bashPlugin string
+
 var version = "0.1.0-dev"
 
-const usage = `shtick tracks your zsh aliases and functions.
+const usage = `shtick tracks your zsh and bash aliases and functions.
 
 usage:
   shtick report            top used, never used, and missed
@@ -35,9 +39,9 @@ usage:
   shtick unused            defined but never used
   shtick missed [-n N]     times you typed the long form
   shtick suggest           frequent commands with no alias or function
-  shtick import [--force]  backfill usage from your zsh history
+  shtick import [--force]  backfill usage from your shell history
   shtick defs [--skipped]  what shtick tracks, and what it skips
-  shtick init zsh          print the zsh plugin, for eval "$(shtick init zsh)"
+  shtick init zsh|bash     print the shell plugin, for eval "$(shtick init zsh)"
   shtick version
 
 Run reports through the plugin's shtick function so they see this shell's
@@ -129,7 +133,7 @@ func (e env) loadDefs(flagValue string) (*defs.Set, error) {
 	if file == "" {
 		latest, err := e.paths.LatestDefs()
 		if err != nil {
-			return nil, errors.New("no alias and function list found; load the zsh plugin (eval \"$(shtick init zsh)\") and open a new prompt")
+			return nil, errors.New("no alias and function list found; load the shell plugin (eval \"$(shtick init zsh)\" or \"$(shtick init bash)\") and open a new prompt")
 		}
 		file = latest
 	}
@@ -189,13 +193,41 @@ func toRecords(events []match.Event, ts int64, src store.Source) []store.Record 
 	return recs
 }
 
+// historyNumber is the "%5d" history number and the "*" (modified) or space
+// marker that bash's `history` prints before each entry.
+var historyNumber = regexp.MustCompile(`^ *[0-9]+[ *] `)
+
+// readHistoryEntry reads `history 1` output saved by the bash plugin and
+// returns the command line without its number. HISTTIMEFORMAT is cleared
+// before it is written, so there is no timestamp.
+func readHistoryEntry(file string) (string, error) {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return "", err
+	}
+	s := strings.TrimSuffix(string(data), "\n")
+	loc := historyNumber.FindStringIndex(s)
+	if loc == nil {
+		return "", fmt.Errorf("%s: not a history entry", file)
+	}
+	return s[loc[1]:], nil
+}
+
 func (e env) hook(args []string) {
 	fs := e.flags("hook")
 	defsFile := fs.String("defs", "", "definitions dump")
+	entryFile := fs.String("history-entry", "", "file holding bash `history 1` output, instead of the line as arguments")
 	if fs.Parse(args) != nil {
 		return
 	}
 	line := strings.Join(fs.Args(), " ")
+	if *entryFile != "" {
+		var err error
+		if line, err = readHistoryEntry(*entryFile); err != nil {
+			e.debug(err)
+			return
+		}
+	}
 	if strings.TrimSpace(line) == "" {
 		return
 	}
@@ -342,7 +374,7 @@ func (e env) suggest(args []string) error {
 	}
 	taken := func(name string) bool {
 		_, err := exec.LookPath(name)
-		return err == nil || zshReserved[name]
+		return err == nil || reserved[name]
 	}
 	sugs := suggest.Find(lines, set, suggest.Options{MinCount: *minCount, Limit: *n, Taken: taken})
 	if len(sugs) == 0 {
@@ -355,8 +387,8 @@ func (e env) suggest(args []string) error {
 	return nil
 }
 
-// zsh builtins and reserved words a suggested name must not shadow.
-var zshReserved = map[string]bool{}
+// zsh and bash builtins and reserved words a suggested name must not shadow.
+var reserved = map[string]bool{}
 
 func init() {
 	for _, w := range strings.Fields(`alias autoload bg bindkey break builtin bye cd chdir command
@@ -366,8 +398,9 @@ func init() {
 		shift source suspend test times trap true ttyctl type typeset ulimit umask unalias
 		unfunction unhash unlimit unset unsetopt vared wait whence where which zcompile zle
 		zmodload zparseopts zstyle do done if fi then else elif case esac for while until
-		select time repeat function`) {
-		zshReserved[w] = true
+		select time repeat function bind caller compgen complete compopt coproc help
+		mapfile readarray shopt`) {
+		reserved[w] = true
 	}
 }
 
@@ -437,9 +470,15 @@ func (e env) importHistory(args []string) error {
 }
 
 func (e env) init(args []string) error {
-	if len(args) != 1 || args[0] != "zsh" {
-		return errors.New("usage: shtick init zsh (only zsh is supported so far)")
+	if len(args) == 1 {
+		switch args[0] {
+		case "zsh":
+			fmt.Fprint(e.out, zshPlugin)
+			return nil
+		case "bash":
+			fmt.Fprint(e.out, bashPlugin)
+			return nil
+		}
 	}
-	fmt.Fprint(e.out, zshPlugin)
-	return nil
+	return errors.New("usage: shtick init zsh|bash")
 }
