@@ -438,7 +438,9 @@ func TestBashPreexec(t *testing.T) {
 }
 
 // TestBashRedefine checks that redefining an alias or function at the prompt
-// refreshes the dump even though the number of definitions stays the same.
+// refreshes the dump even though the number of definitions stays the same. It
+// runs under set -e, which the plugin must not trip, and ends with no tracked
+// functions left, which must not stop the dump from refreshing.
 func TestBashRedefine(t *testing.T) {
 	bash, err := exec.LookPath("bash")
 	if err != nil {
@@ -457,6 +459,7 @@ func TestBashRedefine(t *testing.T) {
 		"alias gs='git status'",
 		`gco() { git checkout "$@"; }`,
 		"source " + plugin,
+		"set -e",
 	}, "\n") + "\n"
 	rcfile := filepath.Join(dir, ".bashrc")
 	os.WriteFile(rcfile, []byte(rc), 0o644)
@@ -471,6 +474,10 @@ func TestBashRedefine(t *testing.T) {
 		"git checkout y",
 		"git stash",
 		"git commit -m x",
+		"unset -f gco shtick", // nothing left for compgen to match
+		"alias gs='git stash -p'",
+		"git stash -p",
+		"echo still-alive",
 	}, "\n") + "\n")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -482,8 +489,11 @@ func TestBashRedefine(t *testing.T) {
 			nudges = append(nudges, l)
 		}
 	}
-	want := []string{"shtick: gs = git status", "shtick: gs = git stash", "shtick: gco = git commit"}
+	want := []string{"shtick: gs = git status", "shtick: gs = git stash", "shtick: gco = git commit", "shtick: gs = git stash -p"}
 	if strings.Join(nudges, "\n") != strings.Join(want, "\n") {
 		t.Errorf("nudges = %q, want %q\n%s", nudges, want, out)
+	}
+	if !strings.Contains(string(out), "\nstill-alive\n") {
+		t.Errorf("shell exited early under set -e:\n%s", out)
 	}
 }

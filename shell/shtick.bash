@@ -33,9 +33,14 @@ _shtick_dump() {
   local f k ext=0 dir=${_shtick_defs%/*} tmp=$_shtick_defs.tmp sig bodies=""
   local -a fns
   [[ -d $dir ]] || mkdir -p -m 700 -- "$dir" || return
-  compgen -A function -X '_*' >| "$tmp" 2>/dev/null && mapfile -t fns < "$tmp" || return
+  # compgen exits 1 when nothing matches, which is fine: no functions.
+  { compgen -A function -X '_*' || :; } >| "$tmp" 2>/dev/null || return
+  mapfile -t fns < "$tmp" || return
   if (( ${#fns[@]} )); then # with no names, declare -f prints every function
-    declare -f -- "${fns[@]}" >| "$tmp" && IFS= read -r -d '' bodies < "$tmp"
+    declare -f -- "${fns[@]}" >| "$tmp" || return
+    # there's no NUL to stop at, so read fills bodies and then reports EOF;
+    # don't let that status reach a shell running with set -e
+    IFS= read -r -d '' bodies < "$tmp" || :
   fi
   printf -v sig '%s\1' "${!BASH_ALIASES[@]}" "${BASH_ALIASES[@]}"
   sig+=$'\2'$bodies
