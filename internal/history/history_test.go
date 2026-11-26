@@ -36,3 +36,26 @@ func TestUnmetafy(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+func TestParseBashStamped(t *testing.T) {
+	// lithist keeps the for loop's newlines; the timestamps delimit entries
+	data := []byte("#1700000000\ngit status\n#1700000010\nfor f in *; do\n  echo $f\ndone\n#1700000020\nls # a comment\n")
+	want := []Entry{
+		{1700000000, "git status"},
+		{1700000010, "for f in *; do\n  echo $f\ndone"},
+		{1700000020, "ls # a comment"},
+	}
+	if got := ParseBash(data); !reflect.DeepEqual(got, want) {
+		t.Errorf("got %q\nwant %q", got, want)
+	}
+}
+
+func TestParseBashPlain(t *testing.T) {
+	// no timestamps: every line is an entry, # lines included, and bytes such
+	// as 0x83 in "ă" (c4 83) are left alone
+	data := []byte("git status\n\n#notastamp\necho a\\\ncafă\n")
+	want := []Entry{{0, "git status"}, {0, "#notastamp"}, {0, `echo a\`}, {0, "cafă"}}
+	if got := ParseBash(data); !reflect.DeepEqual(got, want) {
+		t.Errorf("got %q\nwant %q", got, want)
+	}
+}

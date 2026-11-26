@@ -7,7 +7,7 @@ tasks:
       - go build -o dist/shtick .
 
   test:
-    desc: Run all tests (the zsh test is skipped when zsh is missing)
+    desc: Run all tests (the zsh and bash tests are skipped when that shell is missing)
     cmds:
       - go test ./...
 

@@ -46,7 +46,7 @@ _shtick_exit() {
 shtick() {
   _shtick_sig=""
   _shtick_dump
-  SHTICK_DEFS=$_shtick_defs SHTICK_HISTFILE=$HISTFILE command shtick "$@"
+  SHTICK_DEFS=$_shtick_defs SHTICK_HISTFILE=$HISTFILE SHTICK_SHELL=zsh command shtick "$@"
 }
 
 add-zsh-hook precmd _shtick_dump

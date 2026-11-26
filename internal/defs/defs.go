@@ -1,4 +1,4 @@
-// Package defs reads the alias and function dump the zsh plugin writes and
+// Package defs reads the alias and function dump the shell plugins write and
 // decides which entries shtick tracks.
 package defs
 
@@ -20,12 +20,26 @@ const (
 	Function Kind = "function"
 )
 
+// Shell is the shell a dump came from. A dump may start with a record of
+// kind "shell" naming it; dumps without one are zsh.
+type Shell string
+
+const (
+	Zsh  Shell = "zsh"
+	Bash Shell = "bash"
+	Pwsh Shell = "pwsh" // used on the PowerShell branch; harmless to declare here
+)
+
+// shellKind is the record kind that names the shell. It is not a definition.
+const shellKind = "shell"
+
 // Def is one alias, global alias, or function.
 type Def struct {
 	Kind   Kind
 	Name   string
-	Source string // file a function was defined in, if zsh knows it
+	Source string // file a function was defined in, if the shell knows it
 	Value  string // alias value or function body
+	Shell  Shell  // shell the definition came from
 }
 
 // Skipped is a definition shtick ignores, with the reason.
@@ -36,6 +50,7 @@ type Skipped struct {
 
 // Set holds the tracked definitions.
 type Set struct {
+	Shell     Shell
 	Aliases   map[string]Def
 	Globals   map[string]Def
 	Functions map[string]Def
@@ -112,12 +127,15 @@ var DefaultIgnoreSources = []string{
 	"*/.zim/*", "*/zim/*", "*/zplug/*", "*/.zplug/*", "*/.zprezto/*",
 	"*/site-functions/*", "/usr/share/*", "/usr/local/share/*",
 	"/opt/homebrew/share/*", "*/zsh/functions/*",
+	"*/bash-completion/*", "*/bash_completion.d/*", "/etc/bash_completion",
+	"*/.oh-my-bash/*", "*/oh-my-bash/*", "*/bash-it/*", "*/.bash_it/*",
+	"/etc/profile.d/*",
 }
 
 var hookNames = map[string]bool{
 	"precmd": true, "preexec": true, "chpwd": true, "periodic": true,
 	"zshaddhistory": true, "zshexit": true, "zsh_directory_name": true,
-	"command_not_found_handler": true,
+	"command_not_found_handler": true, "command_not_found_handle": true,
 }
 
 // Parse reads a NUL separated dump: kind, name, source, value, repeated.
@@ -131,9 +149,16 @@ func Parse(data []byte, opt Options) (*Set, error) {
 		return nil, fmt.Errorf("defs: %d fields, want a multiple of 4", len(fields))
 	}
 	s := &Set{
+		Shell:     Zsh,
 		Aliases:   map[string]Def{},
 		Globals:   map[string]Def{},
 		Functions: map[string]Def{},
+	}
+	for i := 0; i < len(fields); i += 4 {
+		if string(fields[i]) == shellKind {
+			s.Shell = Shell(fields[i+1])
+			break
+		}
 	}
 	srcPatterns := opt.IgnoreSources
 	if srcPatterns == nil {
@@ -150,6 +175,13 @@ func Parse(data []byte, opt Options) (*Set, error) {
 			Name:   string(fields[i+1]),
 			Source: string(fields[i+2]),
 			Value:  string(fields[i+3]),
+			Shell:  s.Shell,
+		}
+		if d.Kind == shellKind {
+			continue
+		}
+		if d.Kind == Function && s.Shell == Bash {
+			d = fromBash(d)
 		}
 		if reason := skipReason(d, opt.IgnoreNames, srcGlobs, srcCache); reason != "" {
 			s.Skipped = append(s.Skipped, Skipped{Def: d, Reason: reason})
@@ -168,6 +200,34 @@ func Parse(data []byte, opt Options) (*Set, error) {
 	}
 	sort.Slice(s.Skipped, func(i, j int) bool { return s.Skipped[i].Name < s.Skipped[j].Name })
 	return s, nil
+}
+
+// fromBash normalizes a function from a bash dump, which holds the output of
+// `declare -F name` with extdebug on ("name line file") as the source and
+// `declare -f name` ("name () \n{ \n    body\n}") as the value. Bodies are
+// unwrapped to match what zsh's $functions holds. Functions with redirections
+// after the closing brace keep their wrapper, which makes them not
+// nudgeable.
+func fromBash(d Def) Def {
+	if rest, ok := strings.CutPrefix(d.Source, d.Name+" "); ok && strings.HasSuffix(rest, "\n") {
+		_, file, _ := strings.Cut(strings.TrimSuffix(rest, "\n"), " ")
+		switch file {
+		case "main", "environment": // typed at the prompt or inherited
+			file = ""
+		}
+		d.Source = file
+	}
+	body, ok := strings.CutPrefix(d.Value, d.Name+" () \n{ \n")
+	if !ok {
+		return d
+	}
+	body = strings.TrimRight(body, "\n")
+	if body == "}" {
+		d.Value = ""
+	} else if b, ok := strings.CutSuffix(body, "\n}"); ok {
+		d.Value = b
+	}
+	return d
 }
 
 // Load reads and parses a dump file.

@@ -1,4 +1,5 @@
-// Package history reads zsh history files, plain or extended.
+// Package history reads zsh history files, plain or extended, and bash
+// history files, with or without timestamps.
 package history
 
 import (
@@ -77,11 +78,58 @@ func trailingBackslashes(s string) int {
 	return n
 }
 
-// Load reads and parses a history file.
-func Load(file string) ([]Entry, error) {
+var bashStamp = regexp.MustCompile(`^#\d+$`)
+
+// ParseBash splits bash history data into entries. When the file starts with
+// a "#<unix time>" line (HISTTIMEFORMAT was set), every entry has one, and
+// the lines up to the next timestamp are one entry: that is how bash saves
+// multiline commands with lithist. Without timestamps each line is an entry.
+// Unlike zsh, bash writes bytes as they are, so nothing is unmetafied.
+func ParseBash(data []byte) []Entry {
+	lines := strings.Split(string(data), "\n")
+	stamped := len(lines) > 0 && bashStamp.MatchString(lines[0])
+	var out []Entry
+	var pending int64 // timestamp waiting for its first line
+	newEntry := false
+	for _, line := range lines {
+		if stamped && bashStamp.MatchString(line) {
+			pending, _ = strconv.ParseInt(line[1:], 10, 64)
+			newEntry = true
+			continue
+		}
+		if stamped && !newEntry && len(out) > 0 {
+			out[len(out)-1].Line += "\n" + line
+			continue
+		}
+		out = append(out, Entry{Time: pending, Line: line})
+		newEntry = false
+	}
+	kept := out[:0]
+	for _, e := range out {
+		e.Line = strings.TrimRight(e.Line, "\n")
+		if strings.TrimSpace(e.Line) != "" {
+			kept = append(kept, e)
+		}
+	}
+	return kept
+}
+
+// Format is a history file format.
+type Format string
+
+const (
+	Zsh  Format = "zsh"
+	Bash Format = "bash"
+)
+
+// Load reads and parses a history file in the given format.
+func Load(file string, format Format) ([]Entry, error) {
 	data, err := os.ReadFile(file)
 	if err != nil {
 		return nil, err
+	}
+	if format == Bash {
+		return ParseBash(data), nil
 	}
 	return Parse(data), nil
 }
