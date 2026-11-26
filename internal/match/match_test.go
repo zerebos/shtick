@@ -128,3 +128,34 @@ func TestNoEvents(t *testing.T) {
 		t.Errorf("got %+v", got)
 	}
 }
+
+// TestBashBodies feeds `declare -f` output through defs.Parse, as the bash
+// plugin does, and checks the unwrapped bodies match like zsh ones.
+func TestBashBodies(t *testing.T) {
+	var data []byte
+	for _, r := range [][4]string{
+		{"function", "gco", "gco 1 /home/z/.bashrc\n", "gco () \n{ \n    git checkout \"$@\"\n}\n"},
+		{"function", "sync", "sync 2 /home/z/.bashrc\n", "sync () \n{ \n    git fetch;\n    git status\n}\n"},
+		{"function", "mkcd", "mkcd 3 /home/z/.bashrc\n", "mkcd () \n{ \n    mkdir -p \"$1\" && cd \"$1\"\n}\n"},
+	} {
+		for _, f := range r {
+			data = append(append(data, f...), 0)
+		}
+	}
+	s, err := defs.Parse(data, defs.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(s)
+	got := append(m.Line("git checkout -b x"), m.Line("git fetch; git status")...)
+	want := []Event{
+		{Kind: Missed, Def: defs.Function, Name: "gco", Expansion: "git checkout"},
+		{Kind: Missed, Def: defs.Function, Name: "sync", Expansion: "git fetch; git status"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %+v\nwant %+v", got, want)
+	}
+	if Nudgeable(s.Functions["mkcd"]) {
+		t.Error("mkcd uses $1 and should not be nudgeable")
+	}
+}

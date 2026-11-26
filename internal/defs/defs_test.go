@@ -88,3 +88,44 @@ func TestGlobMatch(t *testing.T) {
 		t.Error("should anchor at start")
 	}
 }
+
+func TestParseBash(t *testing.T) {
+	data := dump(
+		[4]string{"alias", "gst", "", "git status"},
+		[4]string{"function", "gco", "gco 3 /home/z/.bashrc\n", "gco () \n{ \n    git checkout \"$@\"\n}\n"},
+		[4]string{"function", "typed", "typed 1 main\n", "typed () \n{ \n    git fetch;\n    git status\n}\n"},
+		[4]string{"function", "empty", "empty 2 environment\n", "empty () \n{ \n}\n"},
+		[4]string{"function", "redir", "redir 9 /home/my dir/fns.sh\n", "redir () \n{ \n    echo hi\n} > /dev/null\n"},
+		[4]string{"function", "_git", "_git 1 /usr/share/bash-completion/completions/git\n", "_git () \n{ \n    :\n}\n"},
+		[4]string{"function", "gitit", "gitit 1 /home/z/.bash_it/lib/x.bash\n", "gitit () \n{ \n    :\n}\n"},
+		[4]string{"function", "command_not_found_handle", "command_not_found_handle 1 /etc/bash.bashrc\n", "command_not_found_handle () \n{ \n    :\n}\n"},
+	)
+	s, err := Parse(data, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][2]string{
+		"gco":   {"/home/z/.bashrc", "    git checkout \"$@\""},
+		"typed": {"", "    git fetch;\n    git status"},
+		"empty": {"", ""},
+		"redir": {"/home/my dir/fns.sh", "redir () \n{ \n    echo hi\n} > /dev/null\n"},
+	}
+	if len(s.Functions) != len(want) {
+		t.Errorf("functions = %v", s.Functions)
+	}
+	for name, w := range want {
+		d := s.Functions[name]
+		if d.Source != w[0] || d.Value != w[1] {
+			t.Errorf("%s: source %q value %q, want %q %q", name, d.Source, d.Value, w[0], w[1])
+		}
+	}
+	reasons := map[string]string{}
+	for _, sk := range s.Skipped {
+		reasons[sk.Name] = sk.Reason
+	}
+	for name, want := range map[string]string{"_git": "internal", "gitit": "framework", "command_not_found_handle": "hook"} {
+		if !strings.Contains(reasons[name], want) {
+			t.Errorf("%s skipped for %q, want %q", name, reasons[name], want)
+		}
+	}
+}
