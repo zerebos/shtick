@@ -165,8 +165,7 @@ func shell() history.Format {
 
 // formatFor is the history format for a definition set's shell. A dump
 // without a shell record is zsh (only the bash and PowerShell plugins write
-// one), so it
-// doesn't fall back to the environment.
+// one), so it doesn't fall back to the environment.
 func formatFor(set *defs.Set) history.Format {
 	switch set.Shell {
 	case defs.Bash:
