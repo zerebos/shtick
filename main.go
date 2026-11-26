@@ -1,5 +1,6 @@
-// Command shtick tracks which zsh aliases and functions you use, nudges you
-// when you type the long form, and reports what you never touch.
+// Command shtick tracks which zsh and PowerShell aliases and functions you
+// use, nudges you when you type the long form, and reports what you never
+// touch.
 package main
 
 import (
@@ -25,9 +26,12 @@ import (
 //go:embed shell/shtick.plugin.zsh
 var zshPlugin string
 
+//go:embed shell/shtick.plugin.ps1
+var pwshPlugin string
+
 var version = "0.1.0-dev"
 
-const usage = `shtick tracks your zsh aliases and functions.
+const usage = `shtick tracks your zsh and PowerShell aliases and functions.
 
 usage:
   shtick report            top used, never used, and missed
@@ -35,9 +39,11 @@ usage:
   shtick unused            defined but never used
   shtick missed [-n N]     times you typed the long form
   shtick suggest           frequent commands with no alias or function
-  shtick import [--force]  backfill usage from your zsh history
+  shtick import [--force]  backfill usage from your shell history
   shtick defs [--skipped]  what shtick tracks, and what it skips
   shtick init zsh          print the zsh plugin, for eval "$(shtick init zsh)"
+  shtick init pwsh         print the PowerShell plugin, for
+                           Invoke-Expression (& shtick init pwsh | Out-String)
   shtick version
 
 Run reports through the plugin's shtick function so they see this shell's
@@ -129,7 +135,7 @@ func (e env) loadDefs(flagValue string) (*defs.Set, error) {
 	if file == "" {
 		latest, err := e.paths.LatestDefs()
 		if err != nil {
-			return nil, errors.New("no alias and function list found; load the zsh plugin (eval \"$(shtick init zsh)\") and open a new prompt")
+			return nil, errors.New("no alias and function list found; load the shell plugin (see shtick init) and open a new prompt")
 		}
 		file = latest
 	}
@@ -140,14 +146,33 @@ func (e env) loadDefs(flagValue string) (*defs.Set, error) {
 	return set, nil
 }
 
-func histfile(flagValue string) string {
-	for _, v := range []string{flagValue, os.Getenv("SHTICK_HISTFILE"), os.Getenv("HISTFILE")} {
+func histfile(flagValue string, shell defs.Shell) string {
+	candidates := []string{flagValue, os.Getenv("SHTICK_HISTFILE")}
+	if shell != defs.Pwsh {
+		candidates = append(candidates, os.Getenv("HISTFILE")) // a zsh variable
+	}
+	for _, v := range candidates {
 		if v != "" {
 			return v
 		}
 	}
+	if shell == defs.Pwsh {
+		return history.PSReadLinePath()
+	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".zsh_history")
+}
+
+// loadHistory reads a history file in the shell's format.
+func loadHistory(file string, shell defs.Shell) ([]history.Entry, error) {
+	if shell == defs.Pwsh {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			return nil, err
+		}
+		return history.ParsePSReadLine(data), nil
+	}
+	return history.Load(file)
 }
 
 func toRecords(events []match.Event, ts int64, src store.Source) []store.Record {
@@ -162,13 +187,22 @@ func toRecords(events []match.Event, ts int64, src store.Source) []store.Record 
 	return recs
 }
 
+// hook records one typed line. The line comes from the arguments, or from
+// SHTICK_LINE when there are none: PowerShell passes it that way because
+// Windows PowerShell 5.1 mangles quotes in native command arguments.
+// --stdout prints nudges to stdout, for a plugin that captures and shows
+// them itself.
 func (e env) hook(args []string) {
 	fs := e.flags("hook")
 	defsFile := fs.String("defs", "", "definitions dump")
+	toStdout := fs.Bool("stdout", false, "print nudges to stdout")
 	if fs.Parse(args) != nil {
 		return
 	}
 	line := strings.Join(fs.Args(), " ")
+	if len(fs.Args()) == 0 {
+		line = os.Getenv("SHTICK_LINE")
+	}
 	if strings.TrimSpace(line) == "" {
 		return
 	}
@@ -179,9 +213,13 @@ func (e env) hook(args []string) {
 	}
 	events := match.New(set).Line(line)
 	if os.Getenv("SHTICK_NUDGE") != "0" {
+		w := e.err
+		if *toStdout {
+			w = e.out
+		}
 		for _, ev := range events {
 			if ev.Kind == match.Missed {
-				fmt.Fprintf(e.err, "shtick: %s = %s\n", ev.Name, ev.Expansion)
+				fmt.Fprintf(w, "shtick: %s = %s\n", ev.Name, ev.Expansion)
 			}
 		}
 	}
@@ -294,7 +332,7 @@ func (e env) defs(args []string) error {
 func (e env) suggest(args []string) error {
 	fs := e.flags("suggest")
 	defsFile := fs.String("defs", "", "definitions dump")
-	hist := fs.String("histfile", "", "zsh history file (default $HISTFILE or ~/.zsh_history)")
+	hist := fs.String("histfile", "", "history file (default $HISTFILE or ~/.zsh_history; PSReadLine's for PowerShell)")
 	minCount := fs.Int("min", 10, "minimum times typed")
 	n := fs.Int("n", 10, "suggestions to show")
 	if err := fs.Parse(args); err != nil {
@@ -304,7 +342,7 @@ func (e env) suggest(args []string) error {
 	if err != nil {
 		return err
 	}
-	entries, err := history.Load(histfile(*hist))
+	entries, err := loadHistory(histfile(*hist, set.Shell), set.Shell)
 	if err != nil {
 		return err
 	}
@@ -312,9 +350,13 @@ func (e env) suggest(args []string) error {
 	for i, en := range entries {
 		lines[i] = en.Line
 	}
+	reserved := zshReserved
+	if set.Shell == defs.Pwsh {
+		reserved = pwshReserved
+	}
 	taken := func(name string) bool {
 		_, err := exec.LookPath(name)
-		return err == nil || zshReserved[name]
+		return err == nil || reserved[strings.ToLower(name)]
 	}
 	sugs := suggest.Find(lines, set, suggest.Options{MinCount: *minCount, Limit: *n, Taken: taken})
 	if len(sugs) == 0 {
@@ -322,6 +364,11 @@ func (e env) suggest(args []string) error {
 		return nil
 	}
 	for _, s := range sugs {
+		if set.Shell == defs.Pwsh {
+			// PowerShell aliases cannot carry arguments, so suggest a function
+			fmt.Fprintf(e.out, "function %s { %s @args }  # typed %d times\n", s.Name, s.Command, s.Count)
+			continue
+		}
 		fmt.Fprintf(e.out, "alias %s='%s'  # typed %d times\n", s.Name, s.Command, s.Count)
 	}
 	return nil
@@ -341,12 +388,22 @@ func init() {
 		select time repeat function`) {
 		zshReserved[w] = true
 	}
+	for _, w := range strings.Fields(`begin break catch class clean configuration continue data define
+		do dynamicparam else elseif end enum exit filter finally for foreach from function hidden
+		if in inlinescript parallel param process return sequence static switch throw trap try
+		until using var while workflow`) {
+		pwshReserved[w] = true
+	}
 }
+
+// PowerShell keywords a suggested name must not shadow. Built-in aliases are
+// in the dump and checked there.
+var pwshReserved = map[string]bool{}
 
 func (e env) importHistory(args []string) error {
 	fs := e.flags("import")
 	defsFile := fs.String("defs", "", "definitions dump")
-	hist := fs.String("histfile", "", "zsh history file (default $HISTFILE or ~/.zsh_history)")
+	hist := fs.String("histfile", "", "history file (default $HISTFILE or ~/.zsh_history; PSReadLine's for PowerShell)")
 	force := fs.Bool("force", false, "replace an earlier import")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -355,9 +412,20 @@ func (e env) importHistory(args []string) error {
 	if err != nil {
 		return err
 	}
-	file := histfile(*hist)
-	entries, err := history.Load(file)
-	if err != nil {
+	file := histfile(*hist, set.Shell)
+	var entries []history.Entry
+	noTimes := false // history without timestamps, cut at the plugin's mark instead
+	if set.Shell == defs.Pwsh {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			return err
+		}
+		if mark, ok := e.paths.HistoryMark(string(set.Shell)); ok && mark < int64(len(data)) {
+			data = data[:mark]
+		}
+		entries = history.ParsePSReadLine(data)
+		noTimes = true
+	} else if entries, err = history.Load(file); err != nil {
 		return err
 	}
 	existing, err := e.paths.Read()
@@ -365,11 +433,12 @@ func (e env) importHistory(args []string) error {
 		return err
 	}
 
+	src := store.HistorySource(string(set.Shell))
 	var firstHook int64
 	imported := false
 	kept := existing[:0:0]
 	for _, r := range existing {
-		if r.Source == store.FromHistory {
+		if r.Source == src {
 			imported = true
 			continue
 		}
@@ -387,11 +456,11 @@ func (e env) importHistory(args []string) error {
 	skipped := 0
 	for _, en := range entries {
 		// entries at or after the first hook event were already recorded live
-		if firstHook != 0 && (en.Time == 0 || en.Time >= firstHook) {
+		if !noTimes && firstHook != 0 && (en.Time == 0 || en.Time >= firstHook) {
 			skipped++
 			continue
 		}
-		recs = append(recs, toRecords(m.Line(en.Line), en.Time, store.FromHistory)...)
+		recs = append(recs, toRecords(m.Line(en.Line), en.Time, src)...)
 	}
 
 	if imported {
@@ -409,9 +478,15 @@ func (e env) importHistory(args []string) error {
 }
 
 func (e env) init(args []string) error {
-	if len(args) != 1 || args[0] != "zsh" {
-		return errors.New("usage: shtick init zsh (only zsh is supported so far)")
+	if len(args) == 1 {
+		switch args[0] {
+		case "zsh":
+			fmt.Fprint(e.out, zshPlugin)
+			return nil
+		case "pwsh", "powershell":
+			fmt.Fprint(e.out, pwshPlugin)
+			return nil
+		}
 	}
-	fmt.Fprint(e.out, zshPlugin)
-	return nil
+	return errors.New("usage: shtick init zsh|pwsh")
 }

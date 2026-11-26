@@ -5,6 +5,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -191,6 +194,151 @@ func TestZsh(t *testing.T) {
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("zsh output missing %q:\n%s", want, got)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "state", "defs")); err != nil {
+		t.Errorf("defs dir: %v", err)
+	}
+}
+
+func setupPwsh(t *testing.T) (defsFile, dir string) {
+	t.Helper()
+	dir = t.TempDir()
+	t.Setenv("SHTICK_DATA_DIR", filepath.Join(dir, "data"))
+	t.Setenv("SHTICK_STATE_DIR", filepath.Join(dir, "state"))
+	t.Setenv("SHTICK_NUDGE", "")
+	t.Setenv("SHTICK_IGNORE", "")
+	t.Setenv("SHTICK_LINE", "")
+	return writeDefs(t, dir,
+		[4]string{"shell", "pwsh", "", ""},
+		[4]string{"alias", "k", "", "kubectl"},
+		[4]string{"alias", "gci", "builtin", "Get-ChildItem"},
+		[4]string{"function", "gst", "/home/z/profile.ps1", " git status @args "},
+	), dir
+}
+
+func TestPwshHookReadsLineFromEnv(t *testing.T) {
+	defs, _ := setupPwsh(t)
+	t.Setenv("SHTICK_LINE", `Git status -s; k get pods`)
+	stdout, stderr, code := call(t, time.Unix(1000, 0), "hook", "--defs", defs, "--stdout")
+	if code != 0 || stderr != "" || stdout != "shtick: gst = git status\n" {
+		t.Fatalf("code %d stdout %q stderr %q", code, stdout, stderr)
+	}
+	out, _, _ := call(t, time.Unix(1000, 0), "report", "--defs", defs)
+	for _, want := range []string{"k     alias  1", "gst   function  1       0"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("report missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "gci") {
+		t.Errorf("built-in alias reported:\n%s", out)
+	}
+}
+
+func TestPwshImportStopsAtMark(t *testing.T) {
+	defs, dir := setupPwsh(t)
+	hist := filepath.Join(dir, "ConsoleHost_history.txt")
+	before := "git status\r\nk get pods\r\n"
+	os.WriteFile(hist, []byte(before+"gst\r\n"), 0o600)
+	os.MkdirAll(filepath.Join(dir, "state"), 0o700)
+	os.WriteFile(filepath.Join(dir, "state", "pwsh-history.mark"), []byte(strconv.Itoa(len(before))), 0o600)
+
+	// a zsh import must not count as this shell's import
+	os.MkdirAll(filepath.Join(dir, "data"), 0o700)
+	os.WriteFile(filepath.Join(dir, "data", "usage.tsv"), []byte("50\talias\tgst\thistory\n"), 0o600)
+	call(t, time.Unix(300, 0), "hook", "--defs", defs, "--", "gst")
+
+	out, stderr, code := call(t, time.Unix(500, 0), "import", "--defs", defs, "--histfile", hist)
+	if code != 0 || !strings.Contains(out, "imported 2 events from 2 history entries") {
+		t.Fatalf("import: %d %q %q", code, out, stderr)
+	}
+	if _, stderr, code := call(t, time.Unix(500, 0), "import", "--defs", defs, "--histfile", hist); code == 0 || !strings.Contains(stderr, "already imported") {
+		t.Errorf("second import should refuse, got %d %q", code, stderr)
+	}
+	call(t, time.Unix(500, 0), "import", "--defs", defs, "--histfile", hist, "--force")
+	data, _ := os.ReadFile(filepath.Join(dir, "data", "usage.tsv"))
+	if got := strings.Count(string(data), "\thistory-pwsh\n"); got != 2 {
+		t.Errorf("want 2 pwsh history records after --force, got %d:\n%s", got, data)
+	}
+	if !strings.Contains(string(data), "50\talias\tgst\thistory\n") {
+		t.Errorf("--force dropped the zsh import:\n%s", data)
+	}
+}
+
+func TestPwshSuggestAndInit(t *testing.T) {
+	defs, dir := setupPwsh(t)
+	hist := filepath.Join(dir, "hist")
+	os.WriteFile(hist, []byte(strings.Repeat("Get-ChildItem -Recurse -Force\n", 12)), 0o600)
+	t.Setenv("PATH", t.TempDir())
+	out, stderr, code := call(t, time.Now(), "suggest", "--defs", defs, "--histfile", hist)
+	if code != 0 || !strings.Contains(out, "function grf { Get-ChildItem -Recurse -Force @args }  # typed 12 times") {
+		t.Errorf("suggest: %d %q %q", code, out, stderr)
+	}
+	out, _, code = call(t, time.Now(), "init", "pwsh")
+	if code != 0 || !strings.Contains(out, "Set-PSReadLineOption -AddToHistoryHandler") {
+		t.Errorf("init pwsh: %d", code)
+	}
+}
+
+// TestPwsh loads the real PowerShell plugin and drives its hook directly,
+// since PSReadLine needs a terminal. Skipped when pwsh is not installed.
+func TestPwsh(t *testing.T) {
+	pwsh, err := exec.LookPath("pwsh")
+	if err != nil {
+		t.Skip("pwsh not installed")
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	os.MkdirAll(bin, 0o755)
+	exe := "shtick"
+	if runtime.GOOS == "windows" {
+		exe += ".exe"
+	}
+	build := exec.Command("go", "build", "-o", filepath.Join(bin, exe), ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	plugin, _ := filepath.Abs("shell/shtick.plugin.ps1")
+	q := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+	script := strings.Join([]string{
+		"$env:PATH = " + q(bin+string(os.PathListSeparator)) + " + $env:PATH",
+		"$env:SHTICK_DATA_DIR = " + q(filepath.Join(dir, "data")),
+		"$env:SHTICK_STATE_DIR = " + q(filepath.Join(dir, "state")),
+		"function gst { git status @args }",
+		"function Get-Thing { param($Name) Get-Item $Name }",
+		"Set-Alias k kubectl",
+		". " + q(plugin),
+		"$global:LASTEXITCODE = 7",
+		"_shtick_hook 'Git status -s'",
+		"_shtick_hook 'k get pods'",
+		`"exit code kept: $LASTEXITCODE"`,
+		"shtick top",
+		"shtick defs",
+	}, "\n") + "\n"
+	file := filepath.Join(dir, "test.ps1")
+	os.WriteFile(file, []byte(script), 0o644)
+
+	cmd := exec.Command(pwsh, "-NoProfile", "-NonInteractive", "-File", file)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("pwsh: %v\n%s", err, out)
+	}
+	got := string(out)
+	for _, want := range []string{
+		`shtick: gst = git status`,
+		`exit code kept: 7`,
+		`(?m)^k\s+alias\s+1\b`,
+		`(?m)^Get-Thing\s+function\s+no\b`,
+		`(?m)^gst\s+function\s+yes\b`,
+	} {
+		if !regexp.MustCompile(want).MatchString(got) {
+			t.Errorf("pwsh output missing %q:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"Clear-Host", "TabExpansion2", "_shtick_hook"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("pwsh defs should skip %s:\n%s", unwanted, got)
 		}
 	}
 	if _, err := os.Stat(filepath.Join(dir, "state", "defs")); err != nil {

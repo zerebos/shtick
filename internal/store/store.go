@@ -10,9 +10,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -40,22 +40,61 @@ type Paths struct {
 }
 
 // DefaultPaths honors SHTICK_DATA_DIR and SHTICK_STATE_DIR, then the XDG
-// variables, then ~/.local/share and ~/.local/state.
+// variables, then ~/.local/share and ~/.local/state. On Windows the fallback
+// is %LOCALAPPDATA%\shtick (data) and %LOCALAPPDATA%\shtick\state. The
+// PowerShell plugin repeats this logic; keep them in step.
 func DefaultPaths() Paths {
 	home, _ := os.UserHomeDir()
-	pick := func(own, xdg, fallback string) string {
+	local := ""
+	if runtime.GOOS == "windows" {
+		local = os.Getenv("LOCALAPPDATA")
+	}
+	pick := func(own, xdg, fallback, win string) string {
 		if v := os.Getenv(own); v != "" {
 			return v
 		}
 		if v := os.Getenv(xdg); v != "" {
 			return filepath.Join(v, "shtick")
 		}
+		if local != "" {
+			return filepath.Join(local, "shtick", win)
+		}
 		return filepath.Join(home, fallback, "shtick")
 	}
 	return Paths{
-		Data:  pick("SHTICK_DATA_DIR", "XDG_DATA_HOME", ".local/share"),
-		State: pick("SHTICK_STATE_DIR", "XDG_STATE_HOME", ".local/state"),
+		Data:  pick("SHTICK_DATA_DIR", "XDG_DATA_HOME", ".local/share", ""),
+		State: pick("SHTICK_STATE_DIR", "XDG_STATE_HOME", ".local/state", "state"),
 	}
+}
+
+// HistorySource is the log source for imports from a shell's history. zsh
+// keeps the original "history" so earlier imports still count; other shells
+// get their own so importing one does not block or replace another.
+func HistorySource(shell string) Source {
+	if shell == "" || shell == "zsh" {
+		return FromHistory
+	}
+	return Source("history-" + shell)
+}
+
+// HistoryMarkFile records how long a shell's history file was when its plugin
+// first loaded, for history formats without timestamps. Import only reads
+// the part before the mark, since live tracking covers the rest.
+func (p Paths) HistoryMarkFile(shell string) string {
+	return filepath.Join(p.State, shell+"-history.mark")
+}
+
+// HistoryMark returns the byte offset in the mark file, if there is one.
+func (p Paths) HistoryMark(shell string) (int64, bool) {
+	data, err := os.ReadFile(p.HistoryMarkFile(shell))
+	if err != nil {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(string(data), "\uFEFF")), 10, 64)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 // LogFile is the usage log.
@@ -206,9 +245,4 @@ func (p Paths) PruneDefs() int {
 		}
 	}
 	return n
-}
-
-func alive(pid int) bool {
-	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
 }

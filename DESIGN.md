@@ -12,7 +12,7 @@ shtick tracks which of your zsh aliases and functions you actually use, nudges y
 
 ## Non-goals (v1)
 
-- bash and fish. The core is shell-agnostic, but only the zsh plugin ships.
+- bash and fish. The core is shell-agnostic, but only the zsh and PowerShell plugins ship.
 - A TUI. Plain table output first; a Bubbletea view can come later.
 - Suffix aliases (`alias -s`).
 
@@ -57,11 +57,23 @@ shtick: gst = git status
 
 `SHTICK_NUDGE=0` keeps recording but stays quiet.
 
+## PowerShell
+
+The plugin (`shell/shtick.plugin.ps1`) follows the same shape, with these differences:
+
+- **Hook.** PowerShell has no `preexec`. The plugin uses PSReadLine's `AddToHistoryHandler`, which runs after Enter and before the command runs. Only one handler can be registered, so the plugin calls the previous one (by default PSReadLine's, which keeps lines that look like secrets out of the history file) and returns its answer. The definitions dump happens in the same handler instead of on the prompt, so the plugin doesn't have to wrap `prompt` and fight with prompt themes over it.
+- **Passing the line.** The line goes to `shtick hook` through `SHTICK_LINE`, since Windows PowerShell 5.1 mangles quotes in native command arguments. `--stdout` sends the nudge back on stdout, and the plugin prints it with `Write-Host`. The plugin saves and restores `$LASTEXITCODE` around the call.
+- **Dump.** The dump starts with a `shell` record (`shell\0pwsh\0\0\0`), and dumps without one are zsh. The plugin marks aliases and functions from `InitialSessionState.CreateDefault()` as `builtin`. Function sources are `ScriptBlock.File`, or the module's path, matched against `DefaultPwshIgnoreSources` with backslashes turned into forward slashes.
+- **Parsing.** `shparse.SplitPwsh` covers PowerShell quoting: backtick escapes and line continuations, `''` and `""` doubling, smart quotes, groups like `( )`, `$( )`, `@( )`, `{ }` and `@{ }` kept as single words, and `#` and `<# #>` comments. `StripPwsh` drops the `&` and `.` operators, `sudo`, and `$x =` assignments. Command names match case-insensitively; arguments don't.
+- **Templates.** A trailing `@args` or `$args` makes a template a prefix match, and any other use of `$args`, `$input`, `$_`, `$PSBoundParameters` or `$MyInvocation` disqualifies it. So do keywords, `param(...)`, attributes like `[CmdletBinding()]`, and statements that start with `$`, `(` or `@`.
+- **History.** PSReadLine's file has no timestamps. The first time the plugin loads, it writes the history file's length to `$state/pwsh-history.mark`, and `import` reads only the bytes before that mark. Imported records get the source `history-pwsh`, so importing PowerShell history neither blocks nor replaces a zsh import.
+- **Suggest.** It prints `function name { cmd @args }` instead of an alias, because PowerShell aliases can't take arguments.
+
 ## Storage
 
 `$XDG_DATA_HOME/shtick` (default `~/.local/share/shtick`):
 
-- `usage.tsv`: `unix_ts  kind  name  source`, kind is `alias`, `function`, or `missed`, source is `hook` or `history`. Appended with O_APPEND; lines stay well under PIPE_BUF.
+- `usage.tsv`: `unix_ts  kind  name  source`, kind is `alias`, `function`, or `missed`, source is `hook`, `history` (zsh), or `history-<shell>`. Imported entries without a timestamp have `unix_ts` 0. Appended with O_APPEND; lines stay well under PIPE_BUF.
 
 `$XDG_STATE_HOME/shtick` (default `~/.local/state/shtick`):
 

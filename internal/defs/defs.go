@@ -1,4 +1,4 @@
-// Package defs reads the alias and function dump the zsh plugin writes and
+// Package defs reads the alias and function dump a shell plugin writes and
 // decides which entries shtick tracks.
 package defs
 
@@ -20,12 +20,25 @@ const (
 	Function Kind = "function"
 )
 
+// Shell is the shell a dump came from. A dump may start with a record of
+// kind "shell" naming it; dumps without one are zsh.
+type Shell string
+
+const (
+	Zsh  Shell = "zsh"
+	Pwsh Shell = "pwsh"
+)
+
+// shellKind is the record kind that names the shell. It is not a definition.
+const shellKind = "shell"
+
 // Def is one alias, global alias, or function.
 type Def struct {
 	Kind   Kind
 	Name   string
 	Source string // file a function was defined in, if zsh knows it
 	Value  string // alias value or function body
+	Shell  Shell  // shell the definition came from
 }
 
 // Skipped is a definition shtick ignores, with the reason.
@@ -36,14 +49,25 @@ type Skipped struct {
 
 // Set holds the tracked definitions.
 type Set struct {
+	Shell     Shell
 	Aliases   map[string]Def
 	Globals   map[string]Def
 	Functions map[string]Def
 	Skipped   []Skipped
+
+	// folded holds lowercased tracked names for shells whose command names
+	// are case-insensitive, and folded skipped names under a "\x00" prefix.
+	folded map[string]bool
 }
+
+// CaseInsensitive reports whether the shell ignores case in command names.
+func (sh Shell) CaseInsensitive() bool { return sh == Pwsh }
 
 // Has reports whether name is a tracked alias or function (not global).
 func (s *Set) Has(name string) bool {
+	if s.folded != nil {
+		return s.folded[strings.ToLower(name)]
+	}
 	_, a := s.Aliases[name]
 	_, f := s.Functions[name]
 	return a || f
@@ -54,6 +78,9 @@ func (s *Set) Has(name string) bool {
 func (s *Set) Defined(name string) bool {
 	if s.Has(name) {
 		return true
+	}
+	if s.folded != nil {
+		return s.folded["\x00"+strings.ToLower(name)]
 	}
 	if _, ok := s.Globals[name]; ok {
 		return true
@@ -131,13 +158,23 @@ func Parse(data []byte, opt Options) (*Set, error) {
 		return nil, fmt.Errorf("defs: %d fields, want a multiple of 4", len(fields))
 	}
 	s := &Set{
+		Shell:     Zsh,
 		Aliases:   map[string]Def{},
 		Globals:   map[string]Def{},
 		Functions: map[string]Def{},
 	}
+	for i := 0; i < len(fields); i += 4 {
+		if string(fields[i]) == shellKind {
+			s.Shell = Shell(fields[i+1])
+			break
+		}
+	}
 	srcPatterns := opt.IgnoreSources
 	if srcPatterns == nil {
 		srcPatterns = DefaultIgnoreSources
+		if s.Shell == Pwsh {
+			srcPatterns = DefaultPwshIgnoreSources
+		}
 	}
 	srcGlobs := make([]glob, len(srcPatterns))
 	for i, p := range srcPatterns {
@@ -150,8 +187,16 @@ func Parse(data []byte, opt Options) (*Set, error) {
 			Name:   string(fields[i+1]),
 			Source: string(fields[i+2]),
 			Value:  string(fields[i+3]),
+			Shell:  s.Shell,
 		}
-		if reason := skipReason(d, opt.IgnoreNames, srcGlobs, srcCache); reason != "" {
+		if d.Kind == shellKind {
+			continue
+		}
+		skip := skipReason
+		if s.Shell == Pwsh {
+			skip = pwshSkipReason
+		}
+		if reason := skip(d, opt.IgnoreNames, srcGlobs, srcCache); reason != "" {
 			s.Skipped = append(s.Skipped, Skipped{Def: d, Reason: reason})
 			continue
 		}
@@ -167,6 +212,20 @@ func Parse(data []byte, opt Options) (*Set, error) {
 		}
 	}
 	sort.Slice(s.Skipped, func(i, j int) bool { return s.Skipped[i].Name < s.Skipped[j].Name })
+	if s.Shell.CaseInsensitive() {
+		s.folded = map[string]bool{}
+		for _, m := range []map[string]Def{s.Aliases, s.Functions} {
+			for n := range m {
+				s.folded[strings.ToLower(n)] = true
+			}
+		}
+		for n := range s.Globals {
+			s.folded["\x00"+strings.ToLower(n)] = true
+		}
+		for _, sk := range s.Skipped {
+			s.folded["\x00"+strings.ToLower(sk.Name)] = true
+		}
+	}
 	return s, nil
 }
 

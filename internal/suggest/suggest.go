@@ -41,6 +41,7 @@ func Find(lines []string, set *defs.Set, opt Options) []Suggestion {
 		opt.Limit = 10
 	}
 	m := match.New(set)
+	sh := shparse.ForShell(string(set.Shell))
 	counts := map[string]int{}
 	for _, line := range lines {
 		covered := map[string]bool{}
@@ -49,8 +50,8 @@ func Find(lines []string, set *defs.Set, opt Options) []Suggestion {
 				covered[e.Expansion] = true
 			}
 		}
-		for _, c := range shparse.Split(line) {
-			s := shparse.Strip(c)
+		for _, c := range sh.Split(line) {
+			s := sh.Strip(c)
 			if len(s) < 2 || set.Has(s[0].Text) {
 				continue
 			}
@@ -89,7 +90,11 @@ func Find(lines []string, set *defs.Set, opt Options) []Suggestion {
 	}
 	used := map[string]bool{}
 	for i := range out {
-		out[i].Name = name(out[i].Command, func(s string) bool {
+		cmd := out[i].Command
+		if sh.CaseInsensitive {
+			cmd = strings.ToLower(cmd) // Get-ChildItem -Recurse -> gr, not GR
+		}
+		out[i].Name = name(cmd, func(s string) bool {
 			return used[s] || set.Defined(s) || (opt.Taken != nil && opt.Taken(s))
 		})
 		used[out[i].Name] = true
@@ -100,7 +105,7 @@ func Find(lines []string, set *defs.Set, opt Options) []Suggestion {
 // plain words only: no quotes, expansions, globs, paths, or redirections.
 func plain(ws shparse.Command) bool {
 	for _, w := range ws {
-		if w.Raw != w.Text || strings.ContainsAny(w.Text, "$`*?[]{}<>|&;/=~\"'\\") || w.Text == "" {
+		if w.Raw != w.Text || strings.ContainsAny(w.Text, "$`*?[](){}<>|&;/=~\"'\\@") || w.Text == "" {
 			return false
 		}
 	}

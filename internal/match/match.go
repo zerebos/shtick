@@ -3,7 +3,6 @@
 package match
 
 import (
-	"regexp"
 	"sort"
 	"strings"
 
@@ -40,21 +39,65 @@ type template struct {
 // first token and only the groups a typed line could hit get compiled.
 type Matcher struct {
 	set      *defs.Set
+	sh       shparse.Dialect
 	byFirst  map[string][]defs.Def
 	compiled map[string][]template
+	// byFold finds aliases and functions by lowercased name, for shells
+	// whose command names are case-insensitive.
+	aliasFold, funcFold map[string]defs.Def
 }
 
 // New indexes a definition set.
 func New(set *defs.Set) *Matcher {
-	m := &Matcher{set: set, byFirst: map[string][]defs.Def{}, compiled: map[string][]template{}}
+	m := &Matcher{
+		set:      set,
+		sh:       shparse.ForShell(string(set.Shell)),
+		byFirst:  map[string][]defs.Def{},
+		compiled: map[string][]template{},
+	}
 	for _, src := range []map[string]defs.Def{set.Aliases, set.Functions} {
 		for _, d := range src {
-			if f := firstToken(d.Value); f != "" {
+			if f := m.fold(firstToken(d.Value)); f != "" {
 				m.byFirst[f] = append(m.byFirst[f], d)
 			}
 		}
 	}
+	if m.sh.CaseInsensitive {
+		m.aliasFold, m.funcFold = map[string]defs.Def{}, map[string]defs.Def{}
+		for n, d := range set.Aliases {
+			m.aliasFold[strings.ToLower(n)] = d
+		}
+		for n, d := range set.Functions {
+			m.funcFold[strings.ToLower(n)] = d
+		}
+	}
 	return m
+}
+
+// fold normalizes a command word for lookups.
+func (m *Matcher) fold(w string) string {
+	if m.sh.CaseInsensitive {
+		return strings.ToLower(w)
+	}
+	return w
+}
+
+func (m *Matcher) alias(name string) (defs.Def, bool) {
+	if m.aliasFold != nil {
+		d, ok := m.aliasFold[strings.ToLower(name)]
+		return d, ok
+	}
+	d, ok := m.set.Aliases[name]
+	return d, ok
+}
+
+func (m *Matcher) function(name string) (defs.Def, bool) {
+	if m.funcFold != nil {
+		d, ok := m.funcFold[strings.ToLower(name)]
+		return d, ok
+	}
+	d, ok := m.set.Functions[name]
+	return d, ok
 }
 
 // firstToken is a cheap guess at a body's first word. It may be wrong for
@@ -68,6 +111,7 @@ func firstToken(v string) string {
 }
 
 func (m *Matcher) templatesFor(word string) []template {
+	word = m.fold(word)
 	if ts, ok := m.compiled[word]; ok {
 		return ts
 	}
@@ -91,7 +135,8 @@ func (m *Matcher) templatesFor(word string) []template {
 }
 
 func aliasTemplate(d defs.Def) (template, bool) {
-	cmds := toWords(shparse.Split(d.Value))
+	sh := shparse.ForShell(string(d.Shell))
+	cmds := toWords(sh, sh.Split(d.Value))
 	if len(cmds) == 0 {
 		return template{}, false
 	}
@@ -103,26 +148,14 @@ func aliasTemplate(d defs.Def) (template, bool) {
 	return t, true
 }
 
-var (
-	argsTail   = regexp.MustCompile(`^"?\$(@|\*|\{@\}|\{\*\}|argv|\{argv\[@\]\})"?$`)
-	positional = regexp.MustCompile(`\$(\{#?[0-9#*@]|[0-9#*@]|\{?argv)`)
-	control    = map[string]bool{
-		"if": true, "for": true, "foreach": true, "while": true, "until": true,
-		"case": true, "select": true, "repeat": true, "local": true,
-		"typeset": true, "declare": true, "return": true, "shift": true,
-		"[[": true, "[": true, "test": true, "setopt": true, "emulate": true,
-		"zparseopts": true, "{": true, "}": true, "then": true, "fi": true,
-		"do": true, "done": true, "elif": true, "else": true, "esac": true,
-	}
-)
-
 // FunctionTemplate turns a function body into a template if it is a plain
 // sequence of commands, optionally ending with "$@". Bodies with control flow,
 // local variables, or positional parameters other than a trailing "$@" are not
 // templates. Exported for the defs command, which shows why a function is not
 // nudgeable.
 func FunctionTemplate(d defs.Def) (template, bool) {
-	parsed := shparse.Split(d.Value)
+	rules := rulesFor(d.Shell)
+	parsed := rules.dialect.Split(d.Value)
 	if len(parsed) == 0 {
 		return template{}, false
 	}
@@ -131,17 +164,17 @@ func FunctionTemplate(d defs.Def) (template, bool) {
 		if len(c) == 0 {
 			continue
 		}
-		if control[c[0].Text] {
+		if rules.isControl(c[0]) {
 			return template{}, false
 		}
 		var words []string
 		for wi, w := range c {
 			last := ci == len(parsed)-1 && wi == len(c)-1
-			if last && argsTail.MatchString(w.Raw) {
+			if last && rules.argsTail.MatchString(w.Raw) {
 				t.prefix = true
 				continue
 			}
-			if positional.MatchString(w.Raw) {
+			if rules.positional.MatchString(w.Raw) {
 				return template{}, false
 			}
 			words = append(words, w.Text)
@@ -166,7 +199,7 @@ func Nudgeable(d defs.Def) bool {
 
 // Line returns the events for one typed line.
 func (m *Matcher) Line(line string) []Event {
-	cmds := shparse.Split(line)
+	cmds := m.sh.Split(line)
 	var events []Event
 	// typed keeps every word as typed (modifiers included) so templates that
 	// start with sudo or noglob match literally
@@ -180,7 +213,7 @@ func (m *Matcher) Line(line string) []Event {
 			}
 		}
 		typed[i] = c.Texts()
-		s := shparse.Strip(c)
+		s := m.sh.Strip(c)
 		if len(s) == 0 {
 			continue
 		}
@@ -188,11 +221,11 @@ func (m *Matcher) Line(line string) []Event {
 		if word.Raw != word.Text || strings.HasPrefix(word.Raw, "\\") {
 			continue // quoting a command word disables alias expansion
 		}
-		if _, ok := m.set.Aliases[word.Text]; ok {
-			events = append(events, Event{Kind: Used, Def: defs.Alias, Name: word.Text})
+		if d, ok := m.alias(word.Text); ok {
+			events = append(events, Event{Kind: Used, Def: defs.Alias, Name: d.Name})
 			usedCmd[i] = true
-		} else if _, ok := m.set.Functions[word.Text]; ok {
-			events = append(events, Event{Kind: Used, Def: defs.Function, Name: word.Text})
+		} else if d, ok := m.function(word.Text); ok {
+			events = append(events, Event{Kind: Used, Def: defs.Function, Name: d.Name})
 			usedCmd[i] = true
 		}
 	}
@@ -259,7 +292,7 @@ func (m *Matcher) matchAt(t template, typed [][]string, used []bool, start int) 
 			return false
 		}
 		for j := range want {
-			if got[j] != want[j] {
+			if got[j] != want[j] && !(j == 0 && m.sh.CaseInsensitive && strings.EqualFold(got[j], want[j])) {
 				return false
 			}
 		}
@@ -275,10 +308,10 @@ func expansion(t template) string {
 	return strings.Join(parts, "; ")
 }
 
-func toWords(cmds []shparse.Command) [][]string {
+func toWords(sh shparse.Dialect, cmds []shparse.Command) [][]string {
 	var out [][]string
 	for _, c := range cmds {
-		if s := shparse.Strip(c); len(s) > 0 {
+		if s := sh.Strip(c); len(s) > 0 {
 			out = append(out, c.Texts())
 		}
 	}

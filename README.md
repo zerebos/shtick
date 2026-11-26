@@ -1,6 +1,6 @@
 # shtick
 
-Know your shell shortcuts. shtick tracks which zsh aliases **and functions** you actually use, nudges you when you type the long form of one, and tells you which ones you never touch.
+Know your shell shortcuts. shtick tracks which zsh and PowerShell aliases **and functions** you actually use, nudges you when you type the long form of one, and tells you which ones you never touch.
 
 ```
 $ git checkout -b feature
@@ -42,6 +42,16 @@ eval "$(shtick init zsh)"
 
 Or, with a plugin manager, point it at `shell/shtick.plugin.zsh` in this repo.
 
+### PowerShell (experimental)
+
+Add to your `$PROFILE`, after your aliases and functions are defined:
+
+```powershell
+Invoke-Expression (& shtick init pwsh | Out-String)
+```
+
+Works in pwsh 7 and Windows PowerShell 5.1, and needs PSReadLine (on by default in both). PowerShell aliases can't take arguments, so the shortcuts worth nudging are functions like `function gst { git status @args }`. Built-in aliases such as `gci` and functions from modules are skipped.
+
 Open a new shell. To count what you did before installing:
 
 ```sh
@@ -59,14 +69,16 @@ shtick import
 | `shtick suggest [--min N]` | commands you type often that have no shortcut, with a proposed name |
 | `shtick import [--force]` | one-time backfill from `$HISTFILE` |
 | `shtick defs [--skipped]` | what shtick tracks, whether it can nudge, and what it skips |
-| `shtick init zsh` | print the zsh plugin |
+| `shtick init zsh\|pwsh` | print the zsh or PowerShell plugin |
 
-Run these from zsh with the plugin loaded so they see the current shell's aliases and functions.
+Run these from a shell with the plugin loaded so they see the current shell's aliases and functions.
 
 ## What gets nudged
 
 - **Aliases:** typing an alias's value, with or without extra arguments. The most specific alias wins, so `git status -s` suggests `gss` over `gst`.
 - **Functions:** when the body is a plain command or sequence of commands, optionally ending in `"$@"`. `gco() { git checkout "$@" }` matches `git checkout -b x`. Functions with `$1`, local variables, or control flow are tracked for usage but not nudged; `shtick defs` shows which.
+
+In PowerShell, a function body counts as a shortcut when it's a plain command or sequence of commands, optionally ending in `@args` or `$args`. Bodies with `param()`, `$args[0]`, `$_`, or control flow are tracked but not nudged. Command names match regardless of case.
 
 ## Which functions count
 
@@ -80,8 +92,8 @@ zsh carries hundreds of framework and completion functions, so shtick skips name
 | `SHTICK_DISABLE` | unset | any value turns the hook off for that shell |
 | `SHTICK_IGNORE` | none | space-separated name globs to skip, e.g. `'tmp* x'` |
 | `SHTICK_IGNORE_SOURCES` | framework paths | space-separated source path globs to skip; set empty to track everything |
-| `SHTICK_DATA_DIR` | `~/.local/share/shtick` | usage log location |
-| `SHTICK_STATE_DIR` | `~/.local/state/shtick` | per shell definition dumps |
+| `SHTICK_DATA_DIR` | `~/.local/share/shtick` (Windows: `%LOCALAPPDATA%\shtick`) | usage log location |
+| `SHTICK_STATE_DIR` | `~/.local/state/shtick` (Windows: `%LOCALAPPDATA%\shtick\state`) | per shell definition dumps |
 | `SHTICK_DEBUG` | unset | print hook errors |
 
 ## Privacy
@@ -94,7 +106,7 @@ The plugin writes this shell's aliases and functions to a small file whenever th
 
 ## Status
 
-zsh only for now. bash and fish are planned.
+zsh is supported. PowerShell is experimental. bash and fish are planned.
 
 ## License
 

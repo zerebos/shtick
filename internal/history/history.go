@@ -1,4 +1,5 @@
-// Package history reads zsh history files, plain or extended.
+// Package history reads shell history files: zsh (plain or extended) and
+// PSReadLine.
 package history
 
 import (
