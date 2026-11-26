@@ -140,6 +140,18 @@ func (e env) loadDefs(flagValue string) (*defs.Set, error) {
 	return set, nil
 }
 
+// shell is the shell whose history shtick reads: SHTICK_SHELL, which the
+// plugins set, else bash when the login shell ($SHELL) is bash, else zsh.
+func shell() history.Format {
+	if v := os.Getenv("SHTICK_SHELL"); v != "" {
+		return history.Format(v)
+	}
+	if filepath.Base(os.Getenv("SHELL")) == "bash" {
+		return history.Bash
+	}
+	return history.Zsh
+}
+
 func histfile(flagValue string) string {
 	for _, v := range []string{flagValue, os.Getenv("SHTICK_HISTFILE"), os.Getenv("HISTFILE")} {
 		if v != "" {
@@ -147,7 +159,22 @@ func histfile(flagValue string) string {
 		}
 	}
 	home, _ := os.UserHomeDir()
+	if shell() == history.Bash {
+		return filepath.Join(home, ".bash_history")
+	}
 	return filepath.Join(home, ".zsh_history")
+}
+
+// historyFormat picks how to parse a history file: bash for a file named like
+// .bash_history, otherwise the current shell's format.
+func historyFormat(file string) history.Format {
+	if strings.Contains(filepath.Base(file), "bash") {
+		return history.Bash
+	}
+	if strings.Contains(filepath.Base(file), "zsh") {
+		return history.Zsh
+	}
+	return shell()
 }
 
 func toRecords(events []match.Event, ts int64, src store.Source) []store.Record {
@@ -294,7 +321,7 @@ func (e env) defs(args []string) error {
 func (e env) suggest(args []string) error {
 	fs := e.flags("suggest")
 	defsFile := fs.String("defs", "", "definitions dump")
-	hist := fs.String("histfile", "", "zsh history file (default $HISTFILE or ~/.zsh_history)")
+	hist := fs.String("histfile", "", "history file (default $HISTFILE, or ~/.zsh_history or ~/.bash_history)")
 	minCount := fs.Int("min", 10, "minimum times typed")
 	n := fs.Int("n", 10, "suggestions to show")
 	if err := fs.Parse(args); err != nil {
@@ -304,7 +331,8 @@ func (e env) suggest(args []string) error {
 	if err != nil {
 		return err
 	}
-	entries, err := history.Load(histfile(*hist))
+	file := histfile(*hist)
+	entries, err := history.Load(file, historyFormat(file))
 	if err != nil {
 		return err
 	}
@@ -346,7 +374,7 @@ func init() {
 func (e env) importHistory(args []string) error {
 	fs := e.flags("import")
 	defsFile := fs.String("defs", "", "definitions dump")
-	hist := fs.String("histfile", "", "zsh history file (default $HISTFILE or ~/.zsh_history)")
+	hist := fs.String("histfile", "", "history file (default $HISTFILE, or ~/.zsh_history or ~/.bash_history)")
 	force := fs.Bool("force", false, "replace an earlier import")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -356,7 +384,7 @@ func (e env) importHistory(args []string) error {
 		return err
 	}
 	file := histfile(*hist)
-	entries, err := history.Load(file)
+	entries, err := history.Load(file, historyFormat(file))
 	if err != nil {
 		return err
 	}

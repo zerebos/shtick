@@ -33,6 +33,7 @@ func setup(t *testing.T) (defsFile string) {
 	t.Setenv("SHTICK_STATE_DIR", filepath.Join(dir, "state"))
 	t.Setenv("SHTICK_NUDGE", "")
 	t.Setenv("SHTICK_IGNORE", "")
+	t.Setenv("SHTICK_SHELL", "zsh")
 	return writeDefs(t, dir,
 		[4]string{"alias", "gst", "", "git status"},
 		[4]string{"function", "gco", "/home/z/.zshrc", "\tgit checkout \"$@\""},
