@@ -150,8 +150,9 @@ func (e env) loadDefs(flagValue string) (*defs.Set, error) {
 	return set, nil
 }
 
-// shell is the shell whose history shtick reads: SHTICK_SHELL, which the
-// plugins set, else bash when the login shell ($SHELL) is bash, else zsh.
+// shell is the history format to fall back on when the definitions don't say:
+// SHTICK_SHELL, which the plugin wrappers set, else bash when the login shell
+// ($SHELL) is bash, else zsh.
 func shell() history.Format {
 	if v := os.Getenv("SHTICK_SHELL"); v != "" {
 		return history.Format(v)
@@ -162,16 +163,20 @@ func shell() history.Format {
 	return history.Zsh
 }
 
-// formatFor is the history format for a definition set's shell. A PowerShell
-// dump says so itself; zsh and bash dumps look alike, so those fall back to
-// SHTICK_SHELL and the file name.
+// formatFor is the history format for a definition set's shell.
 func formatFor(set *defs.Set) history.Format {
-	if set.Shell == defs.Pwsh {
+	switch set.Shell {
+	case defs.Bash:
+		return history.Bash
+	case defs.Pwsh:
 		return history.Pwsh
 	}
 	return shell()
 }
 
+// histfile is the history file to read: --histfile, SHTICK_HISTFILE, or
+// $HISTFILE (except for PowerShell, where a HISTFILE in the environment
+// belongs to some other shell), else the default file for the format.
 func histfile(flagValue string, format history.Format) string {
 	candidates := []string{flagValue, os.Getenv("SHTICK_HISTFILE")}
 	if format != history.Pwsh {
@@ -192,8 +197,9 @@ func histfile(flagValue string, format history.Format) string {
 	return filepath.Join(home, ".zsh_history")
 }
 
-// historyFormat picks how to parse a history file: bash for a file named like
-// .bash_history, zsh for one like .zsh_history, otherwise the given format.
+// historyFormat picks how to parse a history file: by its name when that says
+// (.bash_history, .zsh_history), so an explicit --histfile wins, otherwise the
+// format the definitions gave.
 func historyFormat(file string, format history.Format) history.Format {
 	if format == history.Pwsh {
 		return format

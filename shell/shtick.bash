@@ -37,6 +37,7 @@ _shtick_dump() {
   shopt -q extdebug && ext=1
   shopt -s extdebug
   {
+    printf '%s\0' shell bash "" "" # names the shell for the binary
     for k in "${!BASH_ALIASES[@]}"; do printf '%s\0' alias "$k" "" "${BASH_ALIASES[$k]}"; done
     for f in "${fns[@]}"; do
       printf 'function\0%s\0' "$f"

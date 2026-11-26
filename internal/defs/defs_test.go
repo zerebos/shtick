@@ -91,6 +91,7 @@ func TestGlobMatch(t *testing.T) {
 
 func TestParseBash(t *testing.T) {
 	data := dump(
+		[4]string{"shell", "bash", "", ""},
 		[4]string{"alias", "gst", "", "git status"},
 		[4]string{"function", "gco", "gco 3 /home/z/.bashrc\n", "gco () \n{ \n    git checkout \"$@\"\n}\n"},
 		[4]string{"function", "typed", "typed 1 main\n", "typed () \n{ \n    git fetch;\n    git status\n}\n"},
@@ -103,6 +104,9 @@ func TestParseBash(t *testing.T) {
 	s, err := Parse(data, Options{})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if s.Shell != Bash || s.Aliases["gst"].Shell != Bash {
+		t.Errorf("shell = %q, alias shell = %q, want bash", s.Shell, s.Aliases["gst"].Shell)
 	}
 	want := map[string][2]string{
 		"gco":   {"/home/z/.bashrc", "    git checkout \"$@\""},
@@ -127,5 +131,26 @@ func TestParseBash(t *testing.T) {
 		if !strings.Contains(reasons[name], want) {
 			t.Errorf("%s skipped for %q, want %q", name, reasons[name], want)
 		}
+	}
+	if _, ok := reasons["bash"]; ok || len(s.Skipped) != 3 {
+		t.Errorf("the shell record is not a definition, skipped = %v", s.Skipped)
+	}
+}
+
+// TestParseZshLeavesBashShapes checks that a dump without a shell record is
+// zsh, and that a zsh function whose body happens to look like `declare -f`
+// output is not unwrapped.
+func TestParseZshLeavesBashShapes(t *testing.T) {
+	body := "odd () \n{ \n    echo hi\n}\n"
+	src := "odd 1 /home/z/.zshrc\n"
+	s, err := Parse(dump([4]string{"function", "odd", src, body}), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Shell != Zsh {
+		t.Errorf("shell = %q, want zsh", s.Shell)
+	}
+	if d := s.Functions["odd"]; d.Value != body || d.Source != src || d.Shell != Zsh {
+		t.Errorf("zsh function changed: %+v", d)
 	}
 }

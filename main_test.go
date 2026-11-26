@@ -102,10 +102,17 @@ func TestHookHistoryEntry(t *testing.T) {
 	}
 }
 
+// TestImportBashHistory checks that a bash dump picks the bash history format
+// on its own: setup sets SHTICK_SHELL=zsh, and the file name says nothing.
 func TestImportBashHistory(t *testing.T) {
-	defs := setup(t)
-	t.Setenv("SHTICK_SHELL", "bash")
-	hist := filepath.Join(t.TempDir(), "hist")
+	setup(t)
+	dir := t.TempDir()
+	defs := writeDefs(t, dir,
+		[4]string{"shell", "bash", "", ""},
+		[4]string{"alias", "gst", "", "git status"},
+		[4]string{"function", "gco", "gco 1 /home/z/.bashrc\n", "gco () \n{ \n    git checkout \"$@\"\n}\n"},
+	)
+	hist := filepath.Join(dir, "hist")
 	os.WriteFile(hist, []byte("#100\ngst\n#200\ngit status\n#300\ngco main\n"), 0o600)
 	out, stderr, code := call(t, time.Unix(500, 0), "import", "--defs", defs, "--histfile", hist)
 	if code != 0 || !strings.Contains(out, "imported 3 events from 3 history entries") {
@@ -116,6 +123,14 @@ func TestImportBashHistory(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("report missing %q:\n%s", want, out)
 		}
+	}
+
+	// a file named for zsh is still read as zsh from a bash shell
+	zhist := filepath.Join(dir, ".zsh_history")
+	os.WriteFile(zhist, []byte(": 100:0;gst\n"), 0o600)
+	out, stderr, code = call(t, time.Unix(500, 0), "import", "--defs", defs, "--histfile", zhist, "--force")
+	if code != 0 || !strings.Contains(out, "imported 1 events from 1 history entries") {
+		t.Errorf("zsh-named import: %d %q %q", code, out, stderr)
 	}
 }
 
@@ -402,6 +417,9 @@ func TestPwsh(t *testing.T) {
 	}
 }
 
+// shellRecord matches the dump's shell record listed as a skipped definition.
+var shellRecord = regexp.MustCompile(`(?m)^bash +shell `)
+
 // TestBash runs the real plugin in an interactive bash, once with default
 // history settings and once with ignoreboth. Skipped when bash is missing or
 // older than 4.4.
@@ -427,7 +445,7 @@ func TestBash(t *testing.T) {
 		"gst",
 		"shtick top",
 		"shtick missed",
-		"shtick defs",
+		"shtick defs --skipped",
 	}, "\n") + "\n"
 
 	for _, hc := range []string{"", "ignoreboth"} {
@@ -481,6 +499,9 @@ func TestBash(t *testing.T) {
 				if !strings.Contains(got, want) {
 					t.Errorf("bash output missing %q:\n%s", want, got)
 				}
+			}
+			if shellRecord.MatchString(got) || strings.Contains(got, "unknown kind") || !strings.Contains(got, "shtick   function") {
+				t.Errorf("defs --skipped should list shtick itself but not the shell record:\n%s", got)
 			}
 			if n := strings.Count(got, "shtick: gst = git status"); n != 1 {
 				t.Errorf("gst nudged %d times, want 1:\n%s", n, got)

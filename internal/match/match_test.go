@@ -134,6 +134,7 @@ func TestNoEvents(t *testing.T) {
 func TestBashBodies(t *testing.T) {
 	var data []byte
 	for _, r := range [][4]string{
+		{"shell", "bash", "", ""},
 		{"function", "gco", "gco 1 /home/z/.bashrc\n", "gco () \n{ \n    git checkout \"$@\"\n}\n"},
 		{"function", "sync", "sync 2 /home/z/.bashrc\n", "sync () \n{ \n    git fetch;\n    git status\n}\n"},
 		{"function", "mkcd", "mkcd 3 /home/z/.bashrc\n", "mkcd () \n{ \n    mkdir -p \"$1\" && cd \"$1\"\n}\n"},

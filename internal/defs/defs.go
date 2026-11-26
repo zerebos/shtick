@@ -26,6 +26,7 @@ type Shell string
 
 const (
 	Zsh  Shell = "zsh"
+	Bash Shell = "bash"
 	Pwsh Shell = "pwsh"
 )
 
@@ -195,7 +196,7 @@ func Parse(data []byte, opt Options) (*Set, error) {
 		if d.Kind == shellKind {
 			continue
 		}
-		if d.Kind == Function && s.Shell != Pwsh {
+		if d.Kind == Function && s.Shell == Bash {
 			d = fromBash(d)
 		}
 		skip := skipReason
@@ -235,12 +236,12 @@ func Parse(data []byte, opt Options) (*Set, error) {
 	return s, nil
 }
 
-// fromBash normalizes a function from the bash plugin, which dumps the output
-// of `declare -F name` with extdebug on ("name line file") as the source and
+// fromBash normalizes a function from a bash dump, which holds the output of
+// `declare -F name` with extdebug on ("name line file") as the source and
 // `declare -f name` ("name () \n{ \n    body\n}") as the value. Bodies are
-// unwrapped to match what zsh's $functions holds. Functions from zsh, or bash
-// ones with redirections after the closing brace, are returned unchanged
-// apart from the source.
+// unwrapped to match what zsh's $functions holds. Functions with redirections
+// after the closing brace keep their wrapper, which makes them not
+// nudgeable.
 func fromBash(d Def) Def {
 	if rest, ok := strings.CutPrefix(d.Source, d.Name+" "); ok && strings.HasSuffix(rest, "\n") {
 		_, file, _ := strings.Cut(strings.TrimSuffix(rest, "\n"), " ")
