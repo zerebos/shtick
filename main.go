@@ -144,8 +144,9 @@ func (e env) loadDefs(flagValue string) (*defs.Set, error) {
 	return set, nil
 }
 
-// shell is the shell whose history shtick reads: SHTICK_SHELL, which the
-// plugins set, else bash when the login shell ($SHELL) is bash, else zsh.
+// shell is the history format to fall back on when the definitions don't say:
+// SHTICK_SHELL, which the plugin wrappers set, else bash when the login shell
+// ($SHELL) is bash, else zsh.
 func shell() history.Format {
 	if v := os.Getenv("SHTICK_SHELL"); v != "" {
 		return history.Format(v)
@@ -156,29 +157,40 @@ func shell() history.Format {
 	return history.Zsh
 }
 
-func histfile(flagValue string) string {
+// formatFor is the history format for a definition set's shell.
+func formatFor(set *defs.Set) history.Format {
+	if set.Shell == defs.Bash {
+		return history.Bash
+	}
+	return shell()
+}
+
+// histfile is the history file to read: --histfile, SHTICK_HISTFILE, or
+// $HISTFILE, else the default file for the format.
+func histfile(flagValue string, format history.Format) string {
 	for _, v := range []string{flagValue, os.Getenv("SHTICK_HISTFILE"), os.Getenv("HISTFILE")} {
 		if v != "" {
 			return v
 		}
 	}
 	home, _ := os.UserHomeDir()
-	if shell() == history.Bash {
+	if format == history.Bash {
 		return filepath.Join(home, ".bash_history")
 	}
 	return filepath.Join(home, ".zsh_history")
 }
 
-// historyFormat picks how to parse a history file: bash for a file named like
-// .bash_history, otherwise the current shell's format.
-func historyFormat(file string) history.Format {
+// historyFormat picks how to parse a history file: by its name when that says
+// (.bash_history, .zsh_history), so an explicit --histfile wins, otherwise the
+// format the definitions gave.
+func historyFormat(file string, format history.Format) history.Format {
 	if strings.Contains(filepath.Base(file), "bash") {
 		return history.Bash
 	}
 	if strings.Contains(filepath.Base(file), "zsh") {
 		return history.Zsh
 	}
-	return shell()
+	return format
 }
 
 func toRecords(events []match.Event, ts int64, src store.Source) []store.Record {
@@ -363,8 +375,9 @@ func (e env) suggest(args []string) error {
 	if err != nil {
 		return err
 	}
-	file := histfile(*hist)
-	entries, err := history.Load(file, historyFormat(file))
+	format := formatFor(set)
+	file := histfile(*hist, format)
+	entries, err := history.Load(file, historyFormat(file, format))
 	if err != nil {
 		return err
 	}
@@ -416,8 +429,9 @@ func (e env) importHistory(args []string) error {
 	if err != nil {
 		return err
 	}
-	file := histfile(*hist)
-	entries, err := history.Load(file, historyFormat(file))
+	format := formatFor(set)
+	file := histfile(*hist, format)
+	entries, err := history.Load(file, historyFormat(file, format))
 	if err != nil {
 		return err
 	}
