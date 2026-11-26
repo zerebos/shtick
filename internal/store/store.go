@@ -182,7 +182,9 @@ func (p Paths) LatestDefs() (string, error) {
 	return best, nil
 }
 
-// PruneDefs deletes dumps whose shell is gone. It returns how many it removed.
+// PruneDefs deletes dumps whose shell is gone, along with that shell's
+// scratch files (<pid>.defs.tmp, <pid>.defs.line). It returns how many dumps
+// it removed.
 func (p Paths) PruneDefs() int {
 	entries, err := os.ReadDir(p.DefsDir())
 	if err != nil {
@@ -190,8 +192,8 @@ func (p Paths) PruneDefs() int {
 	}
 	n := 0
 	for _, e := range entries {
-		pidStr, ok := strings.CutSuffix(e.Name(), ".defs")
-		if !ok {
+		pidStr, rest, ok := strings.Cut(e.Name(), ".defs")
+		if !ok || (rest != "" && !strings.HasPrefix(rest, ".")) {
 			continue
 		}
 		pid, err := strconv.Atoi(pidStr)
@@ -201,7 +203,7 @@ func (p Paths) PruneDefs() int {
 		if alive(pid) {
 			continue
 		}
-		if os.Remove(filepath.Join(p.DefsDir(), e.Name())) == nil {
+		if os.Remove(filepath.Join(p.DefsDir(), e.Name())) == nil && rest == "" {
 			n++
 		}
 	}

@@ -48,9 +48,17 @@ func TestDefsFiles(t *testing.T) {
 	self := filepath.Join(p.DefsDir(), strconv.Itoa(os.Getpid())+".defs")
 	dead := filepath.Join(p.DefsDir(), "999999999.defs")
 	os.WriteFile(dead, nil, 0o600)
+	os.WriteFile(dead+".line", nil, 0o600)
 	os.WriteFile(self, nil, 0o600)
+	os.WriteFile(self+".line", nil, 0o600)
 	if n := p.PruneDefs(); n != 1 {
 		t.Errorf("pruned %d, want 1", n)
+	}
+	if _, err := os.Stat(dead + ".line"); err == nil {
+		t.Error("dead shell's scratch file left behind")
+	}
+	if _, err := os.Stat(self + ".line"); err != nil {
+		t.Error("live shell's scratch file removed")
 	}
 	got, err := p.LatestDefs()
 	if err != nil || got != self {
