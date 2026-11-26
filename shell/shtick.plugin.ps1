@@ -127,12 +127,13 @@ function global:shtick {
   $global:_shtickSig = ''
   try { _shtick_dump } catch { _shtick_debug $_ }
   $env:SHTICK_DEFS = $global:_shtickDefs
+  $env:SHTICK_SHELL = 'pwsh'
   $hist = _shtick_histfile
   if ($hist) { $env:SHTICK_HISTFILE = $hist }
   try {
     & $global:_shtickExe @args
   } finally {
-    Remove-Item -Path env:SHTICK_DEFS, env:SHTICK_HISTFILE -ErrorAction Ignore
+    Remove-Item -Path env:SHTICK_DEFS, env:SHTICK_SHELL, env:SHTICK_HISTFILE -ErrorAction Ignore
   }
 }
 

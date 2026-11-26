@@ -1,4 +1,4 @@
-// Package defs reads the alias and function dump a shell plugin writes and
+// Package defs reads the alias and function dump the shell plugins write and
 // decides which entries shtick tracks.
 package defs
 
@@ -36,7 +36,7 @@ const shellKind = "shell"
 type Def struct {
 	Kind   Kind
 	Name   string
-	Source string // file a function was defined in, if zsh knows it
+	Source string // file a function was defined in, if the shell knows it
 	Value  string // alias value or function body
 	Shell  Shell  // shell the definition came from
 }
@@ -139,12 +139,15 @@ var DefaultIgnoreSources = []string{
 	"*/.zim/*", "*/zim/*", "*/zplug/*", "*/.zplug/*", "*/.zprezto/*",
 	"*/site-functions/*", "/usr/share/*", "/usr/local/share/*",
 	"/opt/homebrew/share/*", "*/zsh/functions/*",
+	"*/bash-completion/*", "*/bash_completion.d/*", "/etc/bash_completion",
+	"*/.oh-my-bash/*", "*/oh-my-bash/*", "*/bash-it/*", "*/.bash_it/*",
+	"/etc/profile.d/*",
 }
 
 var hookNames = map[string]bool{
 	"precmd": true, "preexec": true, "chpwd": true, "periodic": true,
 	"zshaddhistory": true, "zshexit": true, "zsh_directory_name": true,
-	"command_not_found_handler": true,
+	"command_not_found_handler": true, "command_not_found_handle": true,
 }
 
 // Parse reads a NUL separated dump: kind, name, source, value, repeated.
@@ -192,6 +195,9 @@ func Parse(data []byte, opt Options) (*Set, error) {
 		if d.Kind == shellKind {
 			continue
 		}
+		if d.Kind == Function && s.Shell != Pwsh {
+			d = fromBash(d)
+		}
 		skip := skipReason
 		if s.Shell == Pwsh {
 			skip = pwshSkipReason
@@ -227,6 +233,34 @@ func Parse(data []byte, opt Options) (*Set, error) {
 		}
 	}
 	return s, nil
+}
+
+// fromBash normalizes a function from the bash plugin, which dumps the output
+// of `declare -F name` with extdebug on ("name line file") as the source and
+// `declare -f name` ("name () \n{ \n    body\n}") as the value. Bodies are
+// unwrapped to match what zsh's $functions holds. Functions from zsh, or bash
+// ones with redirections after the closing brace, are returned unchanged
+// apart from the source.
+func fromBash(d Def) Def {
+	if rest, ok := strings.CutPrefix(d.Source, d.Name+" "); ok && strings.HasSuffix(rest, "\n") {
+		_, file, _ := strings.Cut(strings.TrimSuffix(rest, "\n"), " ")
+		switch file {
+		case "main", "environment": // typed at the prompt or inherited
+			file = ""
+		}
+		d.Source = file
+	}
+	body, ok := strings.CutPrefix(d.Value, d.Name+" () \n{ \n")
+	if !ok {
+		return d
+	}
+	body = strings.TrimRight(body, "\n")
+	if body == "}" {
+		d.Value = ""
+	} else if b, ok := strings.CutSuffix(body, "\n}"); ok {
+		d.Value = b
+	}
+	return d
 }
 
 // Load reads and parses a dump file.
