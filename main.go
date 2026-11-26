@@ -150,9 +150,9 @@ func (e env) loadDefs(flagValue string) (*defs.Set, error) {
 	return set, nil
 }
 
-// shell is the history format to fall back on when the definitions don't say:
-// SHTICK_SHELL, which the plugin wrappers set, else bash when the login shell
-// ($SHELL) is bash, else zsh.
+// shell is the history format to fall back on when a dump names a shell
+// shtick doesn't know: SHTICK_SHELL, which the plugin wrappers set, else bash
+// when the login shell ($SHELL) is bash, else zsh.
 func shell() history.Format {
 	if v := os.Getenv("SHTICK_SHELL"); v != "" {
 		return history.Format(v)
@@ -163,13 +163,18 @@ func shell() history.Format {
 	return history.Zsh
 }
 
-// formatFor is the history format for a definition set's shell.
+// formatFor is the history format for a definition set's shell. A dump
+// without a shell record is zsh (only the bash and PowerShell plugins write
+// one), so it
+// doesn't fall back to the environment.
 func formatFor(set *defs.Set) history.Format {
 	switch set.Shell {
 	case defs.Bash:
 		return history.Bash
 	case defs.Pwsh:
 		return history.Pwsh
+	case defs.Zsh:
+		return history.Zsh
 	}
 	return shell()
 }

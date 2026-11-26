@@ -134,6 +134,25 @@ func TestImportBashHistory(t *testing.T) {
 	}
 }
 
+// TestImportZshDumpIgnoresLoginShell checks that a zsh dump (no shell record)
+// reads zsh history even when the file name doesn't say so and the login
+// shell is bash, outside the wrapper that sets SHTICK_SHELL. Read as bash,
+// the extended lines would lose their timestamps.
+func TestImportZshDumpIgnoresLoginShell(t *testing.T) {
+	defs := setup(t)
+	t.Setenv("SHTICK_SHELL", "")
+	t.Setenv("SHELL", "/bin/bash")
+	hist := filepath.Join(t.TempDir(), ".histfile") // zsh-newuser-install's default
+	os.WriteFile(hist, []byte(": 100:0;gst\n: 200:0;git status\n"), 0o600)
+	if _, stderr, code := call(t, time.Unix(500, 0), "import", "--defs", defs, "--histfile", hist); code != 0 {
+		t.Fatal(stderr)
+	}
+	data, _ := os.ReadFile(filepath.Join(os.Getenv("SHTICK_DATA_DIR"), "usage.tsv"))
+	if want := "100\talias\tgst\thistory\n200\tmissed\tgst\thistory\n"; string(data) != want {
+		t.Errorf("usage log = %q, want %q", data, want)
+	}
+}
+
 func TestHookNeverFails(t *testing.T) {
 	setup(t)
 	t.Setenv("SHTICK_DEFS", "/nonexistent/defs")
@@ -562,5 +581,56 @@ func TestBashPreexec(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("bash output missing %q:\n%s", want, got)
 		}
+	}
+}
+
+// TestBashRedefine checks that redefining an alias or function at the prompt
+// refreshes the dump even though the number of definitions stays the same.
+func TestBashRedefine(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not installed")
+	}
+	if out, err := exec.Command(bash, "-c", "(( BASH_VERSINFO[0]*100 + BASH_VERSINFO[1] >= 404 ))").CombinedOutput(); err != nil {
+		t.Skipf("bash older than 4.4: %s", out)
+	}
+	dir, bin := buildBin(t)
+	plugin, _ := filepath.Abs("shell/shtick.bash")
+	rc := strings.Join([]string{
+		"export PATH=" + bin + ":$PATH",
+		"export SHTICK_DATA_DIR=" + filepath.Join(dir, "data"),
+		"export SHTICK_STATE_DIR=" + filepath.Join(dir, "state"),
+		"PS1='' PROMPT_COMMAND=''",
+		"alias gs='git status'",
+		`gco() { git checkout "$@"; }`,
+		"source " + plugin,
+	}, "\n") + "\n"
+	rcfile := filepath.Join(dir, ".bashrc")
+	os.WriteFile(rcfile, []byte(rc), 0o644)
+	cmd := exec.Command(bash, "--noprofile", "--rcfile", rcfile, "-i")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "HOME="+dir, "BASH_ENV=", "SHTICK_NUDGE=", "SHTICK_DISABLE=", "SHTICK_IGNORE=")
+	cmd.Stdin = strings.NewReader(strings.Join([]string{
+		"git status", // nudges the original gs
+		"alias gs='git stash'",
+		`gco() { git commit "$@"; }`,
+		"git status", // no longer an alias
+		"git checkout y",
+		"git stash",
+		"git commit -m x",
+	}, "\n") + "\n")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bash: %v\n%s", err, out)
+	}
+	var nudges []string
+	for _, l := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(l, "shtick: ") {
+			nudges = append(nudges, l)
+		}
+	}
+	want := []string{"shtick: gs = git status", "shtick: gs = git stash", "shtick: gco = git commit"}
+	if strings.Join(nudges, "\n") != strings.Join(want, "\n") {
+		t.Errorf("nudges = %q, want %q\n%s", nudges, want, out)
 	}
 }
