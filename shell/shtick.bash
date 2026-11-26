@@ -22,17 +22,23 @@ _shtick_sig=""
 _shtick_histcmd=""
 
 # Write this shell's aliases and functions for the binary to read. Runs on
-# every prompt but only writes when the counts change. Completion functions
-# (names starting with _) are left out here to keep the dump small. Builtins
-# with redirections don't fork, so lists go through scratch files rather than
-# $( ). extdebug is on only while dumping, so `declare -F` reports each
-# function's source file.
+# every prompt but only writes when a definition changes. The signature holds
+# every alias name and value and every function body, so redefining one at
+# the prompt is picked up, not just adding or removing one. Completion
+# functions (names starting with _) are left out to keep the dump small.
+# Builtins with redirections don't fork, so lists go through scratch files
+# rather than $( ). extdebug is on only while dumping, so `declare -F` reports
+# each function's source file.
 _shtick_dump() {
-  local f k ext=0 dir=${_shtick_defs%/*} tmp=$_shtick_defs.tmp
+  local f k ext=0 dir=${_shtick_defs%/*} tmp=$_shtick_defs.tmp sig bodies=""
   local -a fns
   [[ -d $dir ]] || mkdir -p -m 700 -- "$dir" || return
   compgen -A function -X '_*' >| "$tmp" 2>/dev/null && mapfile -t fns < "$tmp" || return
-  local sig="${#BASH_ALIASES[@]} ${#fns[@]}"
+  if (( ${#fns[@]} )); then # with no names, declare -f prints every function
+    declare -f -- "${fns[@]}" >| "$tmp" && IFS= read -r -d '' bodies < "$tmp"
+  fi
+  printf -v sig '%s\1' "${!BASH_ALIASES[@]}" "${BASH_ALIASES[@]}"
+  sig+=$'\2'$bodies
   [[ $sig == "$_shtick_sig" && -e $_shtick_defs ]] && return
   shopt -q extdebug && ext=1
   shopt -s extdebug

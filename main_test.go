@@ -417,3 +417,54 @@ func TestBashPreexec(t *testing.T) {
 		}
 	}
 }
+
+// TestBashRedefine checks that redefining an alias or function at the prompt
+// refreshes the dump even though the number of definitions stays the same.
+func TestBashRedefine(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not installed")
+	}
+	if out, err := exec.Command(bash, "-c", "(( BASH_VERSINFO[0]*100 + BASH_VERSINFO[1] >= 404 ))").CombinedOutput(); err != nil {
+		t.Skipf("bash older than 4.4: %s", out)
+	}
+	dir, bin := buildBin(t)
+	plugin, _ := filepath.Abs("shell/shtick.bash")
+	rc := strings.Join([]string{
+		"export PATH=" + bin + ":$PATH",
+		"export SHTICK_DATA_DIR=" + filepath.Join(dir, "data"),
+		"export SHTICK_STATE_DIR=" + filepath.Join(dir, "state"),
+		"PS1='' PROMPT_COMMAND=''",
+		"alias gs='git status'",
+		`gco() { git checkout "$@"; }`,
+		"source " + plugin,
+	}, "\n") + "\n"
+	rcfile := filepath.Join(dir, ".bashrc")
+	os.WriteFile(rcfile, []byte(rc), 0o644)
+	cmd := exec.Command(bash, "--noprofile", "--rcfile", rcfile, "-i")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "HOME="+dir, "BASH_ENV=", "SHTICK_NUDGE=", "SHTICK_DISABLE=", "SHTICK_IGNORE=")
+	cmd.Stdin = strings.NewReader(strings.Join([]string{
+		"git status", // nudges the original gs
+		"alias gs='git stash'",
+		`gco() { git commit "$@"; }`,
+		"git status", // no longer an alias
+		"git checkout y",
+		"git stash",
+		"git commit -m x",
+	}, "\n") + "\n")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bash: %v\n%s", err, out)
+	}
+	var nudges []string
+	for _, l := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(l, "shtick: ") {
+			nudges = append(nudges, l)
+		}
+	}
+	want := []string{"shtick: gs = git status", "shtick: gs = git stash", "shtick: gco = git commit"}
+	if strings.Join(nudges, "\n") != strings.Join(want, "\n") {
+		t.Errorf("nudges = %q, want %q\n%s", nudges, want, out)
+	}
+}
