@@ -132,6 +132,25 @@ func TestImportBashHistory(t *testing.T) {
 	}
 }
 
+// TestImportZshDumpIgnoresLoginShell checks that a zsh dump (no shell record)
+// reads zsh history even when the file name doesn't say so and the login
+// shell is bash, outside the wrapper that sets SHTICK_SHELL. Read as bash,
+// the extended lines would lose their timestamps.
+func TestImportZshDumpIgnoresLoginShell(t *testing.T) {
+	defs := setup(t)
+	t.Setenv("SHTICK_SHELL", "")
+	t.Setenv("SHELL", "/bin/bash")
+	hist := filepath.Join(t.TempDir(), ".histfile") // zsh-newuser-install's default
+	os.WriteFile(hist, []byte(": 100:0;gst\n: 200:0;git status\n"), 0o600)
+	if _, stderr, code := call(t, time.Unix(500, 0), "import", "--defs", defs, "--histfile", hist); code != 0 {
+		t.Fatal(stderr)
+	}
+	data, _ := os.ReadFile(filepath.Join(os.Getenv("SHTICK_DATA_DIR"), "usage.tsv"))
+	if want := "100\talias\tgst\thistory\n200\tmissed\tgst\thistory\n"; string(data) != want {
+		t.Errorf("usage log = %q, want %q", data, want)
+	}
+}
+
 func TestHookNeverFails(t *testing.T) {
 	setup(t)
 	t.Setenv("SHTICK_DEFS", "/nonexistent/defs")

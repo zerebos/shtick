@@ -71,7 +71,7 @@ The bash plugin (`shell/shtick.bash`) feeds the same binary. The differences:
 - **Lines not in history.** `PS0` runs in a subshell and can't keep state, so `PROMPT_COMMAND` notes `$HISTCMD` before each prompt. If it hasn't moved when `PS0` runs, no entry was added, and `history 1` would return the previous command. The hook is skipped, unless `ignoredups` or `erasedups` is the only thing that could have dropped the line, in which case it is a repeat and counts again. Under `ignoreboth` a repeat and a space-prefixed line look the same, so repeats count once.
 - **bash-preexec.** If it is loaded first, the plugin adds itself to `preexec_functions` and `precmd_functions` and leaves `PS0` alone.
 - **Shell hygiene.** The precmd keeps `$?` for `PS1`, runs last in `PROMPT_COMMAND` (so a `history -n` before it doesn't skew `$HISTCMD`), handles an array `PROMPT_COMMAND` (bash 5.1), loads under `set -u`, and chains onto an existing EXIT trap.
-- **History.** bash files have optional `#<unix time>` lines; when present, the lines up to the next one are one (lithist) entry. bash doesn't metafy, so the zsh decoder isn't used. The format comes from the file name (so `--histfile ~/.zsh_history` reads as zsh), then the dump's shell record, then `SHTICK_SHELL` (set by the plugin wrappers), then `$SHELL`.
+- **History.** bash files have optional `#<unix time>` lines; when present, the lines up to the next one are one (lithist) entry. bash doesn't metafy, so the zsh decoder isn't used. The format comes from the file name (so `--histfile ~/.zsh_history` reads as zsh), then the dump: a `shell bash` record means bash, and no record means zsh. `SHTICK_SHELL` (set by the plugin wrappers) and then `$SHELL` are used only for a shell name shtick doesn't know.
 
 ## Storage
 
